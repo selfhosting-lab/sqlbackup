@@ -1,6 +1,7 @@
 # sqlbackup
 
 [![Drone build status](https://img.shields.io/drone/build/selfhosting-lab/sqlbackup/master?label=BUILD&logo=drone&style=for-the-badge)](https://cloud.drone.io/selfhosting-lab/sqlbackup/)
+[![Image size](https://img.shields.io/docker/image-size/selfhostinglab/sqlbackup/latest?logo=docker&logoColor=ffffff&style=for-the-badge)](https://hub.docker.com/repository/docker/selfhostinglab/sqlbackup/)
 
 
 ## Description
@@ -15,6 +16,13 @@ Integrity checking and safe backup of active databases are included.
 - Backups are recorded in a metadata database to allow easy management.
 - SHA256 checksum are recorded and can be verified easily.
 
+## Usage
+
+To backup a database to the same directory you can simply mount 
+```bash
+docker run --rm -v $(pwd):/opt/backup:rw selfhostinglab/sqlbackup:latest backup my.db
+```
+
 
 ## Subcommands
 
@@ -28,7 +36,9 @@ Integrity checking and safe backup of active databases are included.
 | `help`     | Prints help menu.                           | `shl-sqlbackup help`            |
 
 
-## Environment variables
+---
+
+## Environment variables
 
 | Name          | Default                        | Description                                                     |
 |---------------|--------------------------------|-----------------------------------------------------------------|

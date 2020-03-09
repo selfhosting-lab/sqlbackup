@@ -3,7 +3,7 @@
 # Description: Backup SQLite3 databases
 # Dependencies: awk, file, sed, sha256sum, sqlite3, wc
 
-BACKUP_BASE="${BACKUP_BASE:-'/opt/backup'}"
+BACKUP_BASE="${BACKUP_BASE:-/opt/backup}"
 BACKUP_PATH="${BACKUP_PATH:-${BACKUP_BASE}}"
 METADATA_DB="${BACKUP_BASE}/shl-backups.db"
 DATE=$(date -Iseconds)
