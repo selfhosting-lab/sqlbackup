@@ -12,3 +12,18 @@ steps:
       from_secret: docker_username
     password:
       from_secret: docker_token
+
+- name: documentation
+  image: sheogorath/readme-to-dockerhub:latest
+  environment:
+    DOCKERHUB_USERNAME:
+      from_secret: docker_username
+    DOCKERHUB_PASSWORD:
+      from_secret: docker_token
+    DOCKERHUB_REPO_PREFIX: selfhostinglab
+    DOCKERHUB_REPO_NAME: sqlbackup
+    README_PATH: README.md
+    SHORT_DESCRIPTION: Simple SQLite3 backup utility
+  trigger:
+    branch:
+    - master

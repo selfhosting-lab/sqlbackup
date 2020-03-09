@@ -2,6 +2,7 @@
 
 [![Drone build status](https://img.shields.io/drone/build/selfhosting-lab/sqlbackup/master?label=BUILD&logo=drone&style=for-the-badge)](https://cloud.drone.io/selfhosting-lab/sqlbackup/)
 
+
 ## Description
 
 Provides a simple backup and restore mechanism for SQLite3 databases.
