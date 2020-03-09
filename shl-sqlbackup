@@ -1,0 +1,235 @@
+#!/bin/sh
+# Author: Ben Fairless <benfairless@gmail.com>
+# Description: Backup SQLite3 databases
+# Dependencies: awk, file, sed, sha256sum, sqlite3, wc
+
+BACKUP_BASE="${BACKUP_BASE:-'/opt/backup'}"
+BACKUP_PATH="${BACKUP_PATH:-${BACKUP_BASE}}"
+METADATA_DB="${BACKUP_BASE}/shl-backups.db"
+DATE=$(date -Iseconds)
+
+
+shl_help() {
+  ##############################################################################
+  ############################## PRINT HELP MENU ###############################
+  ##############################################################################
+  cat <<EOF
+
+NAME  
+    shl-sqlbackup -- Simple SQLite3 backup
+
+SYNOPSIS
+    shl-sqlbackup [subcommand] [arguments...]
+
+DESCRIPTION
+    Provides a simple backup and restore mechanism for SQLite3 databases.
+
+    Integrity checking and safe backup of active databases are included.
+
+SUBCOMMANDS
+    backup   Backup a database (e.g. shl-sqlbackup backup test.db).
+    restore  Restore a database from an existing backup, using the backup ID.
+    delete   Delete a backup, using the backup ID.
+    verify   Check the integrity of existing backups, optionally specifying backup ID.
+    list     List all existing backups.
+    help     Prints help menu.
+
+ENVIRONMENT VARIABLES
+    BACKUP_BASE Directory used to store temporary files and backup metadata DB.
+    BACKUP_PATH Specify a default directory for backups to be stored.
+    METADATA_DB Specify an alternative location for the backup metadata DB.
+
+EOF
+
+}
+
+shl_metadata() {
+  ##############################################################################
+  ##################### CHECK IF METADATA DATABASE EXISTS ######################
+  ##############################################################################
+  if [ ! -f "${METADATA_DB}" ]; then
+    echo "No metadata database exists at '${METADATA_DB}'."
+    exit 1
+  fi
+}
+
+shl_dbcheck() {
+  ##############################################################################
+  ####################### CHECK FILE IS A VALID DATABASE #######################
+  ##############################################################################
+  DB_TYPE='SQLite'
+  DATABASE=${1}
+  if [ ! -f "${DATABASE}" ]; then
+    echo "[${DATE}] Could not find database '${DATABASE}'."
+    return 1
+  fi
+  if ! file -b "${DATABASE}" | grep "${DB_TYPE}" >/dev/null; then
+    echo "[${DATE}] '${DATABASE}' does not appear to be an ${DB_TYPE} database."
+    return 1
+  fi
+}
+
+shl_checks() {
+  ##############################################################################
+  ########################### PERFORM PRE-RUN CHECKS ###########################
+  ##############################################################################
+  # Check database file is a valid database
+  shl_dbcheck "${DATABASE}"
+  if [ ! -d "${BACKUP_BASE}" ]; then
+    echo "[${DATE}] '${BACKUP_BASE}' is not a valid directory."
+    return 1
+  fi
+  # Ensure backup directory exists
+  [ ! -d "${BACKUP_PATH}" ] && mkdir -p "${BACKUP_PATH}"
+}
+
+shl_update() {
+  ##############################################################################
+  ###################### OPTIONALLY STORE BACKUP METADATA ######################
+  ##############################################################################
+  [ -z "${METADATA_DB}" ] && return
+  SHA256=$(sha256sum "${BACKUP}" | awk '{printf $1}')
+  # Create database schema if it doesn't exist, before writing entries.
+  sqlite3 "${METADATA_DB}" <<SQL
+    CREATE TABLE IF NOT EXISTS shl_backups (
+      ID INTEGER PRIMARY KEY,
+      Date TEXT NOT NULL,
+      SHA256 TEXT CHECK(length(SHA256) == 64),
+      Source TEXT NOT NULL,
+      Backup TEXT NOT NULL
+    );
+    INSERT INTO shl_backups (Date, SHA256, Source, Backup)
+    VALUES('${DATE}', '${SHA256}', '${DATABASE}', '${BACKUP}')
+SQL
+  echo "[${DATE}] Backup metadata written to '${METADATA_DB}'."
+}
+
+shl_backup() {
+  ##############################################################################
+  ########################## BACKUP DATABASE AND GZIP ##########################
+  ##############################################################################
+  DATABASE="${1}"
+  BACKUP_PATH="${2:-${BACKUP_PATH}}"
+  # Perform pre-checks
+  shl_checks
+  # Backup file name eg. /opt/backup/test.db_20200308-220546
+  BACKUP="${BACKUP_PATH}/$(echo "${DATABASE}_$(date +%Y%m%d-%H%M%S)" | awk -F '/' '{print $NF}' | sed -r 's/^\.*(.*)/\1/')"
+  # Backup database
+  sqlite3 ${DATABASE} ".backup ${BACKUP}"
+  [ ${?} != '0' ] && echo "[${DATE}] Unable to perform backup of '${DATABASE}'." && exit 1
+  # Compress backup
+  gzip -9 "${BACKUP}" && rm -f "${BACKUP}"
+  BACKUP="${BACKUP}.gz"
+  echo "[${DATE}] Backup of '${DATABASE}' successful."
+  echo "[${DATE}] Backup written to '${BACKUP}'."
+  # Optionally store backup metadata
+  shl_update
+}
+
+shl_list() {
+  ##############################################################################
+  ####################### LIST BACKUPS FROM METADATA DB ########################
+  ##############################################################################
+  shl_metadata
+  # Return formatted list of backups
+  sqlite3 -header -column "${METADATA_DB}" <<SQL
+  SELECT ID, Date AS 'Date created', Source AS 'Source database', Backup AS 'Backup path' FROM shl_backups;
+SQL
+}
+
+shl_verify() {
+  ##############################################################################
+  ###################### VERIFY CHECKSUMS OF BACKUP FILES ######################
+  ##############################################################################
+  SELECTION="${1}"
+  CHECKSUMS="${BACKUP_BASE}/.shl_sha256"
+  shl_metadata
+  if [ -z "${SELECTION}" ]; then
+    # Return all backups
+    sqlite3 -separator "  " "${METADATA_DB}" "SELECT SHA256, Backup FROM shl_backups;" > "${CHECKSUMS}"
+    # Verify all backups
+    sha256sum -c "${CHECKSUMS}" 2>/dev/null|| return 1
+  else
+    # Return specific backup
+    sqlite3 -separator "  " "${METADATA_DB}" "SELECT SHA256, Backup FROM shl_backups WHERE ID == ${SELECTION};" > "${CHECKSUMS}"
+    if [ "$(wc -l ${CHECKSUMS})" = "0 ${CHECKSUMS}" ]; then
+      echo "Unable to find a backup with the ID ${SELECTION}"
+      exit 1
+    fi
+    # Verify specific backup
+    sha256sum -c ${CHECKSUMS} 2>/dev/null|| return 1
+  fi
+  # Clean up temporary file
+  rm -f "${CHECKSUMS}"
+}
+
+shl_restore() {
+  ##############################################################################
+  ######################### RESTORE BACKUP TO DATABASE #########################
+  ##############################################################################
+  SELECTION="${1}"
+  TMP_FILE="${BACKUP_BASE}/tmp.sqlite"
+  shl_metadata
+  if [ -z "${SELECTION}" ]; then
+    echo "[${DATE}] You must specify a backup ID to restore."
+    exit 1
+  fi
+  if ! shl_verify "${SELECTION}" >/dev/null 2>&1; then
+    echo "[${DATE}] Cannot restore backup ${SELECTION} as the backup integrity check failed."
+    exit 1
+  fi
+  QUERY=$(sqlite3 -separator "," "${METADATA_DB}" "SELECT Source, Backup FROM shl_backups WHERE ID == ${SELECTION};")
+  DATABASE=$(echo "${QUERY}" | awk -F ',' '{printf $1}')
+  BACKUP=$(echo "${QUERY}" | awk -F ',' '{printf $2}')
+  # Create temporary backup file so as not to tamper with original backup
+  cp "${BACKUP}" "${TMP_FILE}.gz"
+  gunzip "${TMP_FILE}.gz"
+  if sqlite3 "${DATABASE}" ".restore ${TMP_FILE}"; then
+    echo "[${DATE}] Successfully restored ${DATABASE} from backup ${SELECTION}."
+    # Clean up temporary file
+    rm -f "${TMP_FILE}"
+    exit
+  else
+    echo "[${DATE}] Something went wrong restoring ${DATABASE} from backup ${SELECTION}."
+    # Clean up temporary file
+    rm -f "${TMP_FILE}"
+    exit 1
+  fi
+}
+
+shl_delete() {
+  ##############################################################################
+  ######################### RESTORE BACKUP TO DATABASE #########################
+  ##############################################################################
+  SELECTION="${1}"
+  shl_metadata
+  if [ -z "${SELECTION}" ]; then
+    echo "[${DATE}] You must specify a backup ID to delete."
+    exit 1
+  fi
+  # Check if backup exists
+  if [ -z "$(sqlite3 "${METADATA_DB}" "SELECT ID FROM shl_backups WHERE ID == ${SELECTION};")" ]; then
+    echo "[${DATE}] No backup exists with ID ${SELECTION}."
+    return 1
+  fi
+  BACKUP=$(sqlite3 -separator "," "${METADATA_DB}" "SELECT Backup FROM shl_backups WHERE ID == ${SELECTION};")
+  # Remove file if it still exists on disk
+  if [ -f "${BACKUP}" ]; then
+    rm -f "${BACKUP}"
+    echo "[${DATE}] Backup ${SELECTION} deleted from '${BACKUP}'."
+  fi
+  # Delete from metadata DB
+  sqlite3 "${METADATA_DB}" "DELETE FROM shl_backups WHERE ID == ${SELECTION};"
+  echo "[${DATE}] Metadata database updated."
+}
+
+case ${1} in
+   'backup') shift; shl_backup ${1} ${2} ;;
+  'restore') shift; shl_restore "${1}" ;;
+   'verify') shift; shl_verify "${1}" ;;
+   'delete') shift; shl_delete "${1}" ;;
+     'list') shl_list ;;
+     'help') shl_help ;;
+         '') shl_help ;;
+          *) echo "INVALID ARGUMENT '${1}'"; shl_help ;;
+esac
